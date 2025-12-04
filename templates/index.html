@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Image Compressor & WebP Converter</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f4f5f7; margin:0; padding:0 }
+    .container { max-width: 900px; margin:40px auto; background:white; border-radius:12px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.06) }
+    h1{margin-top:0;font-size:24px}
+    .card{border:1px solid #e3e5ea;border-radius:10px;padding:16px 20px;margin-top:16px;background:#fafbff}
+    label{font-weight:600;display:block;margin-bottom:8px}
+    input[type="file"]{display:block;margin-bottom:12px}
+    button{border:none;border-radius:999px;padding:10px 18px;font-size:14px;cursor:pointer;background:#2563eb;color:white;font-weight:600}
+    .flash{background:#fee2e2;color:#b91c1c;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:14px}
+    .stats{font-size:14px;margin-top:12px}
+    .log{font-family:"SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;white-space:pre-wrap;background:#0b1020;color:#e5e7eb;padding:12px;border-radius:10px;max-height:350px;overflow:auto;font-size:12px;margin-top:12px}
+    .download-link{margin-top:12px}
+    a.btn-link{text-decoration:none;display:inline-block;border-radius:999px;padding:8px 14px;background:#16a34a;color:white;font-size:14px;font-weight:600}
+    .progress { background:#e6eef9;border-radius:999px;overflow:hidden;height:18px;width:100%; }
+    .progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3b82f6,#06b6d4); transition: width 0.2s ease; }
+    .center { text-align:center }
+    .spinner {
+      display:inline-block;
+      width:20px; height:20px;
+      border:3px solid rgba(255,255,255,0.2);
+      border-top-color: white;
+      border-radius:50%;
+      animation:spin 1s linear infinite;
+      vertical-align:middle;
+      margin-left:8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Image Compressor & WebP Converter</h1>
+    <p>Upload a <strong>.zip</strong> of your image folder. We'll convert images to WebP and give you a compressed zip back.</p>
+
+    <div class="card">
+      <form id="uploadForm" action="#" onsubmit="return false;" enctype="multipart/form-data">
+        <label for="folder_zip">Folder (zipped as .zip)</label>
+        <input id="folder_zip" type="file" name="folder_zip" accept=".zip" required />
+        <div style="font-size:12px;color:#6b7280;margin-top:4px">Tip: Right-click your image folder → "Compress"/"Send to ZIP" and upload that file.</div>
+        <br />
+        <button id="uploadBtn" type="button">Upload & Compress</button>
+      </form>
+
+      <div id="uploaderUI" style="display:none; margin-top: 12px;">
+        <div><strong>Upload progress</strong></div>
+        <div class="progress" style="margin-top:8px;"><div id="uploadBar"></div></div>
+        <div id="uploadPercent" style="font-size:12px;margin-top:6px;color:#374151">0%</div>
+
+        <div style="margin-top:12px;">
+          <strong>Compression status</strong>
+          <div id="statusLine" style="font-size:13px;color:#4b5563;margin-top:6px">Waiting to start...</div>
+        </div>
+
+        <div id="loader" style="display:none; margin-top:12px;">
+          <div class="center">
+            <button class="btn-link" style="background:#2563eb; margin:0;">Processing<span class="spinner"></span></button>
+          </div>
+        </div>
+
+        <div id="logContainer" style="display:none; margin-top:12px;">
+          <h3 style="margin-bottom:6px">Live Log</h3>
+          <div id="logArea" class="log"></div>
+        </div>
+
+        <div id="downloadArea" style="display:none; margin-top:12px;">
+          <a id="downloadLink" class="btn-link" href="#">Download Compressed ZIP</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const uploadBtn = document.getElementById("uploadBtn");
+  const fileInput = document.getElementById("folder_zip");
+  const uploaderUI = document.getElementById("uploaderUI");
+  const uploadBar = document.getElementById("uploadBar");
+  const uploadPercent = document.getElementById("uploadPercent");
+  const statusLine = document.getElementById("statusLine");
+  const loader = document.getElementById("loader");
+  const logContainer = document.getElementById("logContainer");
+  const logArea = document.getElementById("logArea");
+  const downloadArea = document.getElementById("downloadArea");
+  const downloadLink = document.getElementById("downloadLink");
+
+  let jobId = null;
+  let pollInterval = null;
+  let logPos = 0;
+
+  uploadBtn.addEventListener("click", function(){
+    const file = fileInput.files[0];
+    if (!file) {
+      alert("Please choose a .zip file first.");
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      alert("Please upload a .zip file.");
+      return;
+    }
+    uploaderUI.style.display = "block";
+    logContainer.style.display = "none";
+    downloadArea.style.display = "none";
+    logArea.textContent = "";
+    statusLine.textContent = "Uploading...";
+    uploadPercent.textContent = "0%";
+    uploadBar.style.width = "0%";
+
+    // Use XMLHttpRequest so we can track upload progress
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/upload_async", true);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        uploadBar.style.width = pct + "%";
+        uploadPercent.textContent = pct + "%";
+      }
+    };
+    xhr.onload = function () {
+      if (xhr.status === 202) {
+        const resp = JSON.parse(xhr.responseText);
+        jobId = resp.job_id;
+        statusLine.textContent = "Upload complete. Waiting for processing to start...";
+        // show loader and log area
+        loader.style.display = "block";
+        logContainer.style.display = "block";
+        // start polling status & logs
+        pollInterval = setInterval(pollStatusAndLog, 1000);
+      } else {
+        let msg = "Upload failed";
+        try {
+          msg = JSON.parse(xhr.responseText).error || msg;
+        } catch(e){}
+        statusLine.textContent = msg;
+      }
+    };
+    xhr.onerror = function () {
+      statusLine.textContent = "Upload failed due to network error.";
+    };
+    const formData = new FormData();
+    formData.append("folder_zip", file, file.name);
+    xhr.send(formData);
+  });
+
+  function pollStatusAndLog(){
+    if (!jobId) return;
+    // status
+    fetch("/status/" + jobId).then(r => r.json()).then(data => {
+      if (data && data.status) {
+        statusLine.textContent = "Status: " + data.status;
+        if (data.status === "done" || data.status === "error") {
+          // stop polling after a moment to allow logs to complete
+          setTimeout(() => {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            loader.style.display = "none";
+            if (data.status === "done") {
+              downloadArea.style.display = "block";
+              downloadLink.href = "/download/" + jobId;
+            } else {
+              // error
+              downloadArea.style.display = "none";
+            }
+          }, 500);
+        }
+      }
+    }).catch(err=>{
+      console.error("status err", err);
+    });
+
+    // logs
+    fetch("/log/" + jobId).then(r => r.json()).then(data => {
+      if (data && typeof data.log === "string") {
+        // replace entire log area (simple approach)
+        logArea.textContent = data.log;
+        logArea.scrollTop = logArea.scrollHeight;
+      }
+    }).catch(err=>{
+      console.error("log err", err);
+    });
+  }
+
+})();
+</script>
+
+</body>
+</html>
