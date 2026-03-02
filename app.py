@@ -15,6 +15,7 @@ app.secret_key = "change-this-secret"  # change for production
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1 GB upload max (adjust)
 
 UPLOAD_EXTENSIONS = {".zip"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 # Where job folders live (inside your project folder)
 BASE_JOBS_DIR = os.path.join(os.getcwd(), "jobs")
@@ -96,6 +97,53 @@ def worker_process(job_id, input_zip_path, work_dir):
             jobs[job_id]["status"] = "error"
             jobs[job_id]["log"] += f"Error during processing: {e}\n"
 
+def worker_process_folder(job_id, input_folder, work_dir):
+    """
+    Background worker for folder uploads: files are already in input_folder,
+    so skip unzip and go straight to compression.
+    """
+    with jobs_lock:
+        jobs[job_id]["status"] = "running"
+        jobs[job_id]["log"] += "Worker started...\n"
+
+    try:
+        output_folder = os.path.join(work_dir, "output")
+
+        stats = compress_folder(
+            input_folder=input_folder,
+            output_folder=output_folder,
+            default_quality=80,
+            jpg_quality=70,
+            png_quality=90,
+            use_lossless_for_pngs=False,
+            dry_run=False,
+        )
+
+        with jobs_lock:
+            jobs[job_id]["log"] += stats.get("log", "") + "\n"
+
+        # Zip output
+        output_zip_name = f"compressed_{uuid.uuid4().hex}.zip"
+        output_zip_path = os.path.join(work_dir, output_zip_name)
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(output_folder):
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    arcname = os.path.relpath(file_path, output_folder)
+                    zipf.write(file_path, arcname=arcname)
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "done"
+            jobs[job_id]["log"] += f"Compression finished. Output zip: {output_zip_name}\n"
+            jobs[job_id]["output_zip_path"] = output_zip_path
+            jobs[job_id]["stats"] = stats
+            jobs[job_id]["finished_at"] = time.time()
+
+    except Exception as e:
+        with jobs_lock:
+            jobs[job_id]["status"] = "error"
+            jobs[job_id]["log"] += f"Error during processing: {e}\n"
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
@@ -140,6 +188,62 @@ def upload_async():
 
     # Start background thread
     t = threading.Thread(target=worker_process, args=(job_id, input_zip_path, work_dir), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id}), 202
+
+@app.route("/upload_folder_async", methods=["POST"])
+def upload_folder_async():
+    """
+    Accepts multiple image files from a folder upload (with webkitRelativePath).
+    Reconstructs the folder structure, then compresses.
+    """
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files uploaded."}), 400
+
+    # Filter to supported image files
+    image_files = []
+    for f in files:
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            image_files.append(f)
+
+    if not image_files:
+        return jsonify({"error": "No supported image files found in the folder."}), 400
+
+    job_id = uuid.uuid4().hex
+    work_dir = os.path.join(BASE_JOBS_DIR, f"imgcmp_{job_id}")
+    input_folder = os.path.join(work_dir, "input")
+    os.makedirs(input_folder, exist_ok=True)
+
+    # Save each file preserving its relative path
+    for f in image_files:
+        # f.filename contains the relative path (e.g. "photos/vacation/img.jpg")
+        rel_path = f.filename
+        # Sanitize each path component
+        parts = rel_path.replace("\\", "/").split("/")
+        safe_parts = [secure_filename(p) for p in parts if p]
+        if not safe_parts:
+            continue
+        dest_path = os.path.join(input_folder, *safe_parts)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        f.save(dest_path)
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id,
+            "status": "pending",
+            "work_dir": work_dir,
+            "input_zip": None,
+            "output_zip_path": None,
+            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nUploaded {len(image_files)} image(s) from folder.\n",
+            "stats": None,
+            "created_at": time.time(),
+            "finished_at": None,
+        }
+
+    t = threading.Thread(target=worker_process_folder, args=(job_id, input_folder, work_dir), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id}), 202
