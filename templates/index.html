@@ -20,6 +20,8 @@
     .progress { background:#e6eef9;border-radius:999px;overflow:hidden;height:18px;width:100%; }
     .progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3b82f6,#06b6d4); transition: width 0.2s ease; }
     .center { text-align:center }
+    .mode-btn { background:#e5e7eb; color:#374151; font-size:13px; padding:6px 14px; border-radius:999px; border:none; cursor:pointer; font-weight:600 }
+    .mode-btn.active { background:#2563eb; color:white }
     .spinner {
       display:inline-block;
       width:20px; height:20px;
@@ -36,13 +38,27 @@
 <body>
   <div class="container">
     <h1>Image Compressor & WebP Converter</h1>
-    <p>Upload a <strong>.zip</strong> of your image folder. We'll convert images to WebP and give you a compressed zip back.</p>
+    <p>Upload a folder or a <strong>.zip</strong> of your image folder. We'll recursively find images, convert them to WebP, and give you a compressed zip back — preserving your folder structure.</p>
 
     <div class="card">
       <form id="uploadForm" action="#" onsubmit="return false;" enctype="multipart/form-data">
-        <label for="folder_zip">Folder (zipped as .zip)</label>
-        <input id="folder_zip" type="file" name="folder_zip" accept=".zip" required />
-        <div style="font-size:12px;color:#6b7280;margin-top:4px">Tip: Right-click your image folder → "Compress"/"Send to ZIP" and upload that file.</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button type="button" id="modeFolder" class="mode-btn active">Upload Folder</button>
+          <button type="button" id="modeZip" class="mode-btn">Upload .zip</button>
+        </div>
+
+        <div id="folderInput">
+          <label for="folder_files">Select a folder</label>
+          <input id="folder_files" type="file" webkitdirectory multiple />
+          <div style="font-size:12px;color:#6b7280;margin-top:4px">Pick any folder — we'll recursively find all images inside it.</div>
+        </div>
+
+        <div id="zipInput" style="display:none">
+          <label for="folder_zip">Folder (zipped as .zip)</label>
+          <input id="folder_zip" type="file" name="folder_zip" accept=".zip" />
+          <div style="font-size:12px;color:#6b7280;margin-top:4px">Tip: Right-click your image folder → "Compress"/"Send to ZIP" and upload that file.</div>
+        </div>
+
         <br />
         <button id="uploadBtn" type="button">Upload & Compress</button>
       </form>
@@ -78,7 +94,8 @@
 <script>
 (function(){
   const uploadBtn = document.getElementById("uploadBtn");
-  const fileInput = document.getElementById("folder_zip");
+  const zipInput = document.getElementById("folder_zip");
+  const folderInput = document.getElementById("folder_files");
   const uploaderUI = document.getElementById("uploaderUI");
   const uploadBar = document.getElementById("uploadBar");
   const uploadPercent = document.getElementById("uploadPercent");
@@ -88,21 +105,39 @@
   const logArea = document.getElementById("logArea");
   const downloadArea = document.getElementById("downloadArea");
   const downloadLink = document.getElementById("downloadLink");
+  const modeFolder = document.getElementById("modeFolder");
+  const modeZip = document.getElementById("modeZip");
+  const folderInputDiv = document.getElementById("folderInput");
+  const zipInputDiv = document.getElementById("zipInput");
 
+  let mode = "folder"; // "folder" or "zip"
   let jobId = null;
   let pollInterval = null;
-  let logPos = 0;
+
+  modeFolder.addEventListener("click", function(){
+    mode = "folder";
+    modeFolder.classList.add("active");
+    modeZip.classList.remove("active");
+    folderInputDiv.style.display = "block";
+    zipInputDiv.style.display = "none";
+  });
+  modeZip.addEventListener("click", function(){
+    mode = "zip";
+    modeZip.classList.add("active");
+    modeFolder.classList.remove("active");
+    folderInputDiv.style.display = "none";
+    zipInputDiv.style.display = "block";
+  });
 
   uploadBtn.addEventListener("click", function(){
-    const file = fileInput.files[0];
-    if (!file) {
-      alert("Please choose a .zip file first.");
-      return;
+    if (mode === "zip") {
+      uploadZip();
+    } else {
+      uploadFolder();
     }
-    if (!file.name.toLowerCase().endsWith(".zip")) {
-      alert("Please upload a .zip file.");
-      return;
-    }
+  });
+
+  function resetUI() {
     uploaderUI.style.display = "block";
     logContainer.style.display = "none";
     downloadArea.style.display = "none";
@@ -110,8 +145,29 @@
     statusLine.textContent = "Uploading...";
     uploadPercent.textContent = "0%";
     uploadBar.style.width = "0%";
+  }
 
-    // Use XMLHttpRequest so we can track upload progress
+  function handleUploadResponse(xhr) {
+    if (xhr.status === 202) {
+      const resp = JSON.parse(xhr.responseText);
+      jobId = resp.job_id;
+      statusLine.textContent = "Upload complete. Waiting for processing to start...";
+      loader.style.display = "block";
+      logContainer.style.display = "block";
+      pollInterval = setInterval(pollStatusAndLog, 1000);
+    } else {
+      let msg = "Upload failed";
+      try { msg = JSON.parse(xhr.responseText).error || msg; } catch(e){}
+      statusLine.textContent = msg;
+    }
+  }
+
+  function uploadZip() {
+    const file = zipInput.files[0];
+    if (!file) { alert("Please choose a .zip file first."); return; }
+    if (!file.name.toLowerCase().endsWith(".zip")) { alert("Please upload a .zip file."); return; }
+    resetUI();
+
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/upload_async", true);
     xhr.upload.onprogress = function (e) {
@@ -121,31 +177,51 @@
         uploadPercent.textContent = pct + "%";
       }
     };
-    xhr.onload = function () {
-      if (xhr.status === 202) {
-        const resp = JSON.parse(xhr.responseText);
-        jobId = resp.job_id;
-        statusLine.textContent = "Upload complete. Waiting for processing to start...";
-        // show loader and log area
-        loader.style.display = "block";
-        logContainer.style.display = "block";
-        // start polling status & logs
-        pollInterval = setInterval(pollStatusAndLog, 1000);
-      } else {
-        let msg = "Upload failed";
-        try {
-          msg = JSON.parse(xhr.responseText).error || msg;
-        } catch(e){}
-        statusLine.textContent = msg;
-      }
-    };
-    xhr.onerror = function () {
-      statusLine.textContent = "Upload failed due to network error.";
-    };
+    xhr.onload = function () { handleUploadResponse(xhr); };
+    xhr.onerror = function () { statusLine.textContent = "Upload failed due to network error."; };
     const formData = new FormData();
     formData.append("folder_zip", file, file.name);
     xhr.send(formData);
-  });
+  }
+
+  function uploadFolder() {
+    const files = folderInput.files;
+    if (!files || files.length === 0) { alert("Please select a folder first."); return; }
+
+    // Filter to image files only
+    const imageExts = ['.png', '.jpg', '.jpeg', '.webp'];
+    const imageFiles = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const ext = f.name.substring(f.name.lastIndexOf('.')).toLowerCase();
+      if (imageExts.includes(ext)) {
+        imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length === 0) { alert("No images found in the selected folder."); return; }
+
+    resetUI();
+    statusLine.textContent = "Uploading " + imageFiles.length + " image(s)...";
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/upload_folder_async", true);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        uploadBar.style.width = pct + "%";
+        uploadPercent.textContent = pct + "%";
+      }
+    };
+    xhr.onload = function () { handleUploadResponse(xhr); };
+    xhr.onerror = function () { statusLine.textContent = "Upload failed due to network error."; };
+
+    const formData = new FormData();
+    for (let i = 0; i < imageFiles.length; i++) {
+      const f = imageFiles[i];
+      formData.append("files", f, f.webkitRelativePath || f.name);
+    }
+    xhr.send(formData);
+  }
 
   function pollStatusAndLog(){
     if (!jobId) return;
