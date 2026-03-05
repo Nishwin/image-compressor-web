@@ -12,7 +12,7 @@ from compressor import compress_folder
 
 app = Flask(__name__)
 app.secret_key = "change-this-secret"  # change for production
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1 GB upload max (adjust)
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5 GB upload max (adjust)
 
 UPLOAD_EXTENSIONS = {".zip"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -40,7 +40,19 @@ def safe_rmtree(path):
     if os.path.exists(path):
         shutil.rmtree(path, ignore_errors=True)
 
-def worker_process(job_id, input_zip_path, work_dir):
+def make_progress_callback(job_id):
+    """Create a progress callback that updates the job's progress fields."""
+    def callback(current, total, filename):
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]["progress"] = {
+                    "current": current,
+                    "total": total,
+                    "filename": filename,
+                }
+    return callback
+
+def worker_process(job_id, input_zip_path, work_dir, output_format="webp"):
     """
     Background worker: unzips, runs compression, zips output, updates jobs[job_id]
     """
@@ -69,6 +81,8 @@ def worker_process(job_id, input_zip_path, work_dir):
             png_quality=90,
             use_lossless_for_pngs=False,
             dry_run=False,
+            output_format=output_format,
+            progress_callback=make_progress_callback(job_id),
         )
 
         # Append compressor log
@@ -97,7 +111,7 @@ def worker_process(job_id, input_zip_path, work_dir):
             jobs[job_id]["status"] = "error"
             jobs[job_id]["log"] += f"Error during processing: {e}\n"
 
-def worker_process_folder(job_id, input_folder, work_dir):
+def worker_process_folder(job_id, input_folder, work_dir, output_format="webp"):
     """
     Background worker for folder uploads: files are already in input_folder,
     so skip unzip and go straight to compression.
@@ -117,6 +131,8 @@ def worker_process_folder(job_id, input_folder, work_dir):
             png_quality=90,
             use_lossless_for_pngs=False,
             dry_run=False,
+            output_format=output_format,
+            progress_callback=make_progress_callback(job_id),
         )
 
         with jobs_lock:
@@ -173,6 +189,8 @@ def upload_async():
     input_zip_path = os.path.join(work_dir, filename)
     file.save(input_zip_path)
 
+    output_format = request.form.get("output_format", "webp").lower().strip()
+
     with jobs_lock:
         jobs[job_id] = {
             "id": job_id,
@@ -180,14 +198,15 @@ def upload_async():
             "work_dir": work_dir,
             "input_zip": input_zip_path,
             "output_zip_path": None,
-            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\n",
+            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nOutput format: {output_format}\n",
             "stats": None,
+            "progress": None,
             "created_at": time.time(),
             "finished_at": None,
         }
 
     # Start background thread
-    t = threading.Thread(target=worker_process, args=(job_id, input_zip_path, work_dir), daemon=True)
+    t = threading.Thread(target=worker_process, args=(job_id, input_zip_path, work_dir, output_format), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id}), 202
@@ -230,6 +249,8 @@ def upload_folder_async():
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         f.save(dest_path)
 
+    output_format = request.form.get("output_format", "webp").lower().strip()
+
     with jobs_lock:
         jobs[job_id] = {
             "id": job_id,
@@ -237,13 +258,14 @@ def upload_folder_async():
             "work_dir": work_dir,
             "input_zip": None,
             "output_zip_path": None,
-            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nUploaded {len(image_files)} image(s) from folder.\n",
+            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nUploaded {len(image_files)} image(s) from folder.\nOutput format: {output_format}\n",
             "stats": None,
+            "progress": None,
             "created_at": time.time(),
             "finished_at": None,
         }
 
-    t = threading.Thread(target=worker_process_folder, args=(job_id, input_folder, work_dir), daemon=True)
+    t = threading.Thread(target=worker_process_folder, args=(job_id, input_folder, work_dir, output_format), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id}), 202
@@ -259,6 +281,7 @@ def status(job_id):
             "status": job["status"],
             "stats_available": bool(job.get("stats")),
             "finished_at": job.get("finished_at"),
+            "progress": job.get("progress"),
         })
 
 @app.route("/log/<job_id>", methods=["GET"])
