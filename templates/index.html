@@ -22,6 +22,8 @@
     .center { text-align:center }
     .mode-btn { background:#e5e7eb; color:#374151; font-size:13px; padding:6px 14px; border-radius:999px; border:none; cursor:pointer; font-weight:600 }
     .mode-btn.active { background:#2563eb; color:white }
+    select { padding:8px 12px; border-radius:8px; border:1px solid #d1d5db; font-size:14px; background:white; cursor:pointer }
+    select:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,0.15) }
     .spinner {
       display:inline-block;
       width:20px; height:20px;
@@ -43,20 +45,29 @@
     <div class="card">
       <form id="uploadForm" action="#" onsubmit="return false;" enctype="multipart/form-data">
         <div style="display:flex;gap:8px;margin-bottom:12px">
-          <button type="button" id="modeFolder" class="mode-btn active">Upload Folder</button>
-          <button type="button" id="modeZip" class="mode-btn">Upload .zip</button>
+          <button type="button" id="modeZip" class="mode-btn active">Upload .zip</button>
+          <button type="button" id="modeFolder" class="mode-btn">Upload Folder</button>
         </div>
 
-        <div id="folderInput">
+        <div id="zipInput">
+          <label for="folder_zip">Folder (zipped as .zip)</label>
+          <input id="folder_zip" type="file" name="folder_zip" accept=".zip" />
+          <div style="font-size:12px;color:#6b7280;margin-top:4px">Tip: Right-click your image folder → "Compress"/"Send to ZIP" and upload that file.</div>
+        </div>
+
+        <div id="folderInput" style="display:none">
           <label for="folder_files">Select a folder</label>
           <input id="folder_files" type="file" webkitdirectory multiple />
           <div style="font-size:12px;color:#6b7280;margin-top:4px">Pick any folder — we'll recursively find all images inside it.</div>
         </div>
 
-        <div id="zipInput" style="display:none">
-          <label for="folder_zip">Folder (zipped as .zip)</label>
-          <input id="folder_zip" type="file" name="folder_zip" accept=".zip" />
-          <div style="font-size:12px;color:#6b7280;margin-top:4px">Tip: Right-click your image folder → "Compress"/"Send to ZIP" and upload that file.</div>
+        <div style="margin-top:12px">
+          <label for="outputFormat">Output format</label>
+          <select id="outputFormat">
+            <option value="webp" selected>WebP (recommended)</option>
+            <option value="jpg">JPEG</option>
+            <option value="png">PNG</option>
+          </select>
         </div>
 
         <br />
@@ -71,6 +82,16 @@
         <div style="margin-top:12px;">
           <strong>Compression status</strong>
           <div id="statusLine" style="font-size:13px;color:#4b5563;margin-top:6px">Waiting to start...</div>
+        </div>
+
+        <div id="compressionProgress" style="display:none; margin-top:12px;">
+          <div><strong>Compression progress</strong></div>
+          <div class="progress" style="margin-top:8px;"><div id="compressionBar" style="background:linear-gradient(90deg,#10b981,#06b6d4)"></div></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+            <div id="compressionPercent" style="font-size:12px;color:#374151">0%</div>
+            <div id="compressionCount" style="font-size:12px;color:#6b7280">0 / 0</div>
+          </div>
+          <div id="compressionFile" style="font-size:12px;color:#6b7280;margin-top:4px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
         </div>
 
         <div id="loader" style="display:none; margin-top:12px;">
@@ -110,7 +131,8 @@
   const folderInputDiv = document.getElementById("folderInput");
   const zipInputDiv = document.getElementById("zipInput");
 
-  let mode = "folder"; // "folder" or "zip"
+  let mode = "zip"; // "folder" or "zip"
+  const formatSelect = document.getElementById("outputFormat");
   let jobId = null;
   let pollInterval = null;
 
@@ -137,10 +159,21 @@
     }
   });
 
+  const compressionProgress = document.getElementById("compressionProgress");
+  const compressionBar = document.getElementById("compressionBar");
+  const compressionPercent = document.getElementById("compressionPercent");
+  const compressionCount = document.getElementById("compressionCount");
+  const compressionFile = document.getElementById("compressionFile");
+
   function resetUI() {
     uploaderUI.style.display = "block";
     logContainer.style.display = "none";
     downloadArea.style.display = "none";
+    compressionProgress.style.display = "none";
+    compressionBar.style.width = "0%";
+    compressionPercent.textContent = "0%";
+    compressionCount.textContent = "0 / 0";
+    compressionFile.textContent = "";
     logArea.textContent = "";
     statusLine.textContent = "Uploading...";
     uploadPercent.textContent = "0%";
@@ -181,6 +214,7 @@
     xhr.onerror = function () { statusLine.textContent = "Upload failed due to network error."; };
     const formData = new FormData();
     formData.append("folder_zip", file, file.name);
+    formData.append("output_format", formatSelect.value);
     xhr.send(formData);
   }
 
@@ -216,6 +250,7 @@
     xhr.onerror = function () { statusLine.textContent = "Upload failed due to network error."; };
 
     const formData = new FormData();
+    formData.append("output_format", formatSelect.value);
     for (let i = 0; i < imageFiles.length; i++) {
       const f = imageFiles[i];
       formData.append("files", f, f.webkitRelativePath || f.name);
@@ -229,6 +264,17 @@
     fetch("/status/" + jobId).then(r => r.json()).then(data => {
       if (data && data.status) {
         statusLine.textContent = "Status: " + data.status;
+
+        // Update compression progress bar
+        if (data.progress && data.progress.total > 0) {
+          compressionProgress.style.display = "block";
+          const pct = Math.round((data.progress.current / data.progress.total) * 100);
+          compressionBar.style.width = pct + "%";
+          compressionPercent.textContent = pct + "%";
+          compressionCount.textContent = data.progress.current + " / " + data.progress.total;
+          compressionFile.textContent = "Compressing: " + data.progress.filename;
+        }
+
         if (data.status === "done" || data.status === "error") {
           // stop polling after a moment to allow logs to complete
           setTimeout(() => {
@@ -236,6 +282,9 @@
             pollInterval = null;
             loader.style.display = "none";
             if (data.status === "done") {
+              compressionBar.style.width = "100%";
+              compressionPercent.textContent = "100%";
+              compressionFile.textContent = "Done!";
               downloadArea.style.display = "block";
               downloadLink.href = "/download/" + jobId;
             } else {
