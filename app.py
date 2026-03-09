@@ -52,7 +52,14 @@ def make_progress_callback(job_id):
                 }
     return callback
 
-def worker_process(job_id, input_zip_path, work_dir, output_format="webp"):
+# Quality presets for compression strength
+STRENGTH_PRESETS = {
+    "light":  {"default_quality": 90, "jpg_quality": 85, "png_quality": 95},
+    "medium": {"default_quality": 80, "jpg_quality": 70, "png_quality": 90},
+    "heavy":  {"default_quality": 50, "jpg_quality": 40, "png_quality": 60},
+}
+
+def worker_process(job_id, input_zip_path, work_dir, output_format="webp", strength="medium", compression_type="lossy"):
     """
     Background worker: unzips, runs compression, zips output, updates jobs[job_id]
     """
@@ -72,14 +79,17 @@ def worker_process(job_id, input_zip_path, work_dir, output_format="webp"):
 
         output_folder = os.path.join(work_dir, "output")
 
+        preset = STRENGTH_PRESETS.get(strength, STRENGTH_PRESETS["medium"])
+        use_lossless = compression_type == "lossless"
+
         # Run compression (this returns stats and a full log)
         stats = compress_folder(
             input_folder=input_folder,
             output_folder=output_folder,
-            default_quality=80,
-            jpg_quality=70,
-            png_quality=90,
-            use_lossless_for_pngs=False,
+            default_quality=preset["default_quality"],
+            jpg_quality=preset["jpg_quality"],
+            png_quality=preset["png_quality"],
+            use_lossless_for_pngs=use_lossless,
             dry_run=False,
             output_format=output_format,
             progress_callback=make_progress_callback(job_id),
@@ -99,9 +109,12 @@ def worker_process(job_id, input_zip_path, work_dir, output_format="webp"):
                     arcname = os.path.relpath(file_path, output_folder)
                     zipf.write(file_path, arcname=arcname)
 
+        output_zip_size = os.path.getsize(output_zip_path)
+        stats["output_zip_size"] = output_zip_size
+
         with jobs_lock:
             jobs[job_id]["status"] = "done"
-            jobs[job_id]["log"] += f"Compression finished. Output zip: {output_zip_name}\n"
+            jobs[job_id]["log"] += f"Compression finished. Output zip: {output_zip_name} ({round(output_zip_size/1024/1024, 2)} MB)\n"
             jobs[job_id]["output_zip_path"] = output_zip_path
             jobs[job_id]["stats"] = stats
             jobs[job_id]["finished_at"] = time.time()
@@ -111,7 +124,7 @@ def worker_process(job_id, input_zip_path, work_dir, output_format="webp"):
             jobs[job_id]["status"] = "error"
             jobs[job_id]["log"] += f"Error during processing: {e}\n"
 
-def worker_process_folder(job_id, input_folder, work_dir, output_format="webp"):
+def worker_process_folder(job_id, input_folder, work_dir, output_format="webp", strength="medium", compression_type="lossy"):
     """
     Background worker for folder uploads: files are already in input_folder,
     so skip unzip and go straight to compression.
@@ -123,13 +136,16 @@ def worker_process_folder(job_id, input_folder, work_dir, output_format="webp"):
     try:
         output_folder = os.path.join(work_dir, "output")
 
+        preset = STRENGTH_PRESETS.get(strength, STRENGTH_PRESETS["medium"])
+        use_lossless = compression_type == "lossless"
+
         stats = compress_folder(
             input_folder=input_folder,
             output_folder=output_folder,
-            default_quality=80,
-            jpg_quality=70,
-            png_quality=90,
-            use_lossless_for_pngs=False,
+            default_quality=preset["default_quality"],
+            jpg_quality=preset["jpg_quality"],
+            png_quality=preset["png_quality"],
+            use_lossless_for_pngs=use_lossless,
             dry_run=False,
             output_format=output_format,
             progress_callback=make_progress_callback(job_id),
@@ -148,9 +164,12 @@ def worker_process_folder(job_id, input_folder, work_dir, output_format="webp"):
                     arcname = os.path.relpath(file_path, output_folder)
                     zipf.write(file_path, arcname=arcname)
 
+        output_zip_size = os.path.getsize(output_zip_path)
+        stats["output_zip_size"] = output_zip_size
+
         with jobs_lock:
             jobs[job_id]["status"] = "done"
-            jobs[job_id]["log"] += f"Compression finished. Output zip: {output_zip_name}\n"
+            jobs[job_id]["log"] += f"Compression finished. Output zip: {output_zip_name} ({round(output_zip_size/1024/1024, 2)} MB)\n"
             jobs[job_id]["output_zip_path"] = output_zip_path
             jobs[job_id]["stats"] = stats
             jobs[job_id]["finished_at"] = time.time()
@@ -190,6 +209,8 @@ def upload_async():
     file.save(input_zip_path)
 
     output_format = request.form.get("output_format", "webp").lower().strip()
+    strength = request.form.get("strength", "medium").lower().strip()
+    compression_type = request.form.get("compression_type", "lossy").lower().strip()
 
     with jobs_lock:
         jobs[job_id] = {
@@ -198,7 +219,7 @@ def upload_async():
             "work_dir": work_dir,
             "input_zip": input_zip_path,
             "output_zip_path": None,
-            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nOutput format: {output_format}\n",
+            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nOutput format: {output_format} | Strength: {strength} | Type: {compression_type}\n",
             "stats": None,
             "progress": None,
             "created_at": time.time(),
@@ -206,7 +227,7 @@ def upload_async():
         }
 
     # Start background thread
-    t = threading.Thread(target=worker_process, args=(job_id, input_zip_path, work_dir, output_format), daemon=True)
+    t = threading.Thread(target=worker_process, args=(job_id, input_zip_path, work_dir, output_format, strength, compression_type), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id}), 202
@@ -250,6 +271,8 @@ def upload_folder_async():
         f.save(dest_path)
 
     output_format = request.form.get("output_format", "webp").lower().strip()
+    strength = request.form.get("strength", "medium").lower().strip()
+    compression_type = request.form.get("compression_type", "lossy").lower().strip()
 
     with jobs_lock:
         jobs[job_id] = {
@@ -258,14 +281,14 @@ def upload_folder_async():
             "work_dir": work_dir,
             "input_zip": None,
             "output_zip_path": None,
-            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nUploaded {len(image_files)} image(s) from folder.\nOutput format: {output_format}\n",
+            "log": f"Job created at {time.ctime()}\nJob folder: {work_dir}\nUploaded {len(image_files)} image(s) from folder.\nOutput format: {output_format} | Strength: {strength} | Type: {compression_type}\n",
             "stats": None,
             "progress": None,
             "created_at": time.time(),
             "finished_at": None,
         }
 
-    t = threading.Thread(target=worker_process_folder, args=(job_id, input_folder, work_dir, output_format), daemon=True)
+    t = threading.Thread(target=worker_process_folder, args=(job_id, input_folder, work_dir, output_format, strength, compression_type), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id}), 202
@@ -276,13 +299,25 @@ def status(job_id):
         job = jobs.get(job_id)
         if not job:
             return jsonify({"error": "job not found"}), 404
-        return jsonify({
+        resp = {
             "job_id": job_id,
             "status": job["status"],
             "stats_available": bool(job.get("stats")),
             "finished_at": job.get("finished_at"),
             "progress": job.get("progress"),
-        })
+        }
+        if job.get("stats"):
+            s = job["stats"]
+            resp["stats"] = {
+                "total_original_size": s.get("total_original_size", 0),
+                "total_converted_size": s.get("total_converted_size", 0),
+                "size_diff": s.get("size_diff"),
+                "reduction_percent": s.get("reduction_percent"),
+                "total_images_parsed": s.get("total_images_parsed", 0),
+                "converted_count": s.get("converted_count", 0),
+                "output_zip_size": s.get("output_zip_size"),
+            }
+        return jsonify(resp)
 
 @app.route("/log/<job_id>", methods=["GET"])
 def log(job_id):
