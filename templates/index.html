@@ -24,6 +24,10 @@
     .mode-btn.active { background:#2563eb; color:white }
     select { padding:8px 12px; border-radius:8px; border:1px solid #d1d5db; font-size:14px; background:white; cursor:pointer }
     select:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,0.15) }
+    .stat-box { flex:1; min-width:120px; background:#f0f4ff; border-radius:10px; padding:12px 14px; text-align:center }
+    .stat-box.saved { background:#ecfdf5 }
+    .stat-label { font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px }
+    .stat-value { font-size:18px; font-weight:700; color:#1e293b }
     .spinner {
       display:inline-block;
       width:20px; height:20px;
@@ -61,13 +65,32 @@
           <div style="font-size:12px;color:#6b7280;margin-top:4px">Pick any folder — we'll recursively find all images inside it.</div>
         </div>
 
-        <div style="margin-top:12px">
-          <label for="outputFormat">Output format</label>
-          <select id="outputFormat">
-            <option value="webp" selected>WebP (recommended)</option>
-            <option value="jpg">JPEG</option>
-            <option value="png">PNG</option>
-          </select>
+        <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px">
+            <label for="outputFormat">Output format</label>
+            <select id="outputFormat">
+              <option value="webp" selected>WebP (recommended)</option>
+              <option value="jpg">JPEG</option>
+              <option value="png">PNG</option>
+            </select>
+          </div>
+
+          <div style="flex:1;min-width:140px">
+            <label for="compressionStrength">Compression strength</label>
+            <select id="compressionStrength">
+              <option value="light">Light — ~20% smaller, best quality</option>
+              <option value="medium" selected>Medium — ~50% smaller, good quality</option>
+              <option value="heavy">Heavy — ~70% smaller, lower quality</option>
+            </select>
+          </div>
+
+          <div style="flex:1;min-width:140px">
+            <label for="compressionType">Compression type</label>
+            <select id="compressionType">
+              <option value="lossy" selected>Lossy (smaller files)</option>
+              <option value="lossless">Lossless (exact quality)</option>
+            </select>
+          </div>
         </div>
 
         <br />
@@ -108,6 +131,32 @@
         <div id="downloadArea" style="display:none; margin-top:12px;">
           <a id="downloadLink" class="btn-link" href="#">Download Compressed ZIP</a>
         </div>
+
+        <div id="statsArea" style="display:none; margin-top:16px;">
+          <h3 style="margin-bottom:8px">Compression Results</h3>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <div class="stat-box">
+              <div class="stat-label">Original Size</div>
+              <div id="statOriginal" class="stat-value">—</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Compressed Size</div>
+              <div id="statCompressed" class="stat-value">—</div>
+            </div>
+            <div class="stat-box saved">
+              <div class="stat-label">Space Saved</div>
+              <div id="statSaved" class="stat-value">—</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Images Processed</div>
+              <div id="statCount" class="stat-value">—</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Output ZIP Size</div>
+              <div id="statZipSize" class="stat-value">—</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -133,6 +182,9 @@
 
   let mode = "zip"; // "folder" or "zip"
   const formatSelect = document.getElementById("outputFormat");
+  const strengthSelect = document.getElementById("compressionStrength");
+  const typeSelect = document.getElementById("compressionType");
+  const statsArea = document.getElementById("statsArea");
   let jobId = null;
   let pollInterval = null;
 
@@ -174,6 +226,7 @@
     compressionPercent.textContent = "0%";
     compressionCount.textContent = "0 / 0";
     compressionFile.textContent = "";
+    statsArea.style.display = "none";
     logArea.textContent = "";
     statusLine.textContent = "Uploading...";
     uploadPercent.textContent = "0%";
@@ -215,6 +268,8 @@
     const formData = new FormData();
     formData.append("folder_zip", file, file.name);
     formData.append("output_format", formatSelect.value);
+    formData.append("strength", strengthSelect.value);
+    formData.append("compression_type", typeSelect.value);
     xhr.send(formData);
   }
 
@@ -251,11 +306,38 @@
 
     const formData = new FormData();
     formData.append("output_format", formatSelect.value);
+    formData.append("strength", strengthSelect.value);
+    formData.append("compression_type", typeSelect.value);
     for (let i = 0; i < imageFiles.length; i++) {
       const f = imageFiles[i];
       formData.append("files", f, f.webkitRelativePath || f.name);
     }
     xhr.send(formData);
+  }
+
+  function formatSize(bytes) {
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024*1024*1024)).toFixed(2) + " GB";
+    if (bytes >= 1024 * 1024) return (bytes / (1024*1024)).toFixed(1) + " MB";
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return bytes + " B";
+  }
+
+  function fetchStats() {
+    fetch("/status/" + jobId).then(r => r.json()).then(data => {
+      if (data && data.stats) {
+        const s = data.stats;
+        document.getElementById("statOriginal").textContent = formatSize(s.total_original_size);
+        document.getElementById("statCompressed").textContent = formatSize(s.total_converted_size);
+        const savedPct = s.reduction_percent != null ? s.reduction_percent.toFixed(1) + "%" : "—";
+        const savedBytes = s.size_diff != null ? formatSize(s.size_diff) : "—";
+        document.getElementById("statSaved").textContent = savedBytes + " (" + savedPct + ")";
+        document.getElementById("statCount").textContent = s.converted_count + " / " + s.total_images_parsed;
+        if (s.output_zip_size != null) {
+          document.getElementById("statZipSize").textContent = formatSize(s.output_zip_size);
+        }
+        statsArea.style.display = "block";
+      }
+    }).catch(err => console.error("stats err", err));
   }
 
   function pollStatusAndLog(){
@@ -287,6 +369,7 @@
               compressionFile.textContent = "Done!";
               downloadArea.style.display = "block";
               downloadLink.href = "/download/" + jobId;
+              fetchStats();
             } else {
               // error
               downloadArea.style.display = "none";
