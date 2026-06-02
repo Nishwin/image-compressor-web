@@ -1,0 +1,82 @@
+:root {
+  color-scheme: light;
+  --bg-ink: #101418;
+  --panel: rgba(255, 251, 245, 0.88);
+  --panel-strong: #fffaf2;
+  --line: rgba(23, 37, 84, 0.12);
+  --text-soft: #5b6474;
+  --gold: #d7b97a;
+  --teal: #156f6a;
+  --teal-soft: rgba(21, 111, 106, 0.12);
+  --coral: #dd6b42;
+  --pine: #11453b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(221, 107, 66, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(215, 185, 122, 0.16), transparent 26%),
+    linear-gradient(180deg, #f6ecdb 0%, #f7f3ec 38%, #fffdf8 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.2;
+  background-image:
+    linear-gradient(rgba(17, 69, 59, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 69, 59, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at center, black 28%, transparent 88%);
+}
+
+.glass-panel {
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.08);
+}
+
+.money-input::-webkit-outer-spin-button,
+.money-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.money-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.range-track {
+  accent-color: var(--teal);
+}
+
+.fade-up {
+  animation: fadeUp 0.6s ease both;
+}
+
+.fade-up-delay {
+  animation: fadeUp 0.85s ease both;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
